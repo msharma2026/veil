@@ -55,6 +55,10 @@ pub fn router(hub: HubState) -> Router {
         .route("/v1/projects/{p}/changes", post(changes))
         .route("/v1/projects/{p}/land", post(land))
         .route("/v1/projects/{p}/land/{ticket}", get(land_status))
+        // agent-ci fork: the verifier's view of a gated branch's queue.
+        .route("/v1/projects/{p}/gate/{branch}", get(crate::landing::gate::list_route))
+        .route("/v1/projects/{p}/gate/{branch}/approve", post(crate::landing::gate::approve_route))
+        .route("/v1/projects/{p}/gate/{branch}/reject", post(crate::landing::gate::reject_route))
         .route("/v1/projects/{p}/events", get(crate::events::route))
         .route("/v1/projects/{p}/checks", post(crate::ci::post_check_route).get(crate::ci::list_checks_route))
         .route("/v1/projects/{p}/tested/{branch}", get(crate::ci::tested_route))

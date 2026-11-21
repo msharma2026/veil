@@ -217,6 +217,9 @@ struct Row {
     epochs: (i64, i64),
     merges: u32,
     agent_session: Option<String>,
+    /// agent-ci fork: the tip a verifier approved the row on (gated
+    /// branches).
+    gate_tip: Option<String>,
 }
 
 /// Per-entry review check state (`BUG-1880`): what `prs::verify_landing_review`
@@ -634,7 +637,19 @@ impl Service {
             }
             let has_merging = self.reclaim_expired_merges().await?;
             let exclude = inflight.as_ref().map(|f| f.seqs.clone()).unwrap_or_default();
-            let rows = self.ready(&exclude).await?;
+            // agent-ci fork: a gated branch lands only approved rows, and
+            // only those approved on the tip the next batch builds on (the
+            // batch being committed's, else the branch's): the leading run
+            // of them, in the verifier's order. Rows approved on another
+            // tip wait (the verifier approves them again, or rejects them).
+            let gated = super::gate::is_gated(&self.hub, self.project).await?.contains(&self.branch);
+            let rows = if gated {
+                let on_tip = inflight.as_ref().map(|f| f.after.tip).unwrap_or(state.tip).map(|t| t.to_string());
+                let picked = self.ready_gated(&exclude).await?;
+                picked.into_iter().take_while(|r| r.gate_tip.is_some() && r.gate_tip == on_tip).collect()
+            } else {
+                self.ready(&exclude).await?
+            };
             spent(&self.hub.landing.stats.ready_us, t);
             if rows.is_empty() {
                 if let Some(f) = inflight.take() {
@@ -868,6 +883,33 @@ impl Service {
                     epochs: (r.person_epoch, r.project_epoch),
                     merges: r.merges.max(0) as u32,
                     agent_session: r.agent_session,
+                    gate_tip: r.gate_tip,
+                })
+            })
+            .collect()
+    }
+
+    /// agent-ci fork: the approved rows of a gated branch, in the
+    /// verifier's order (`limits::landing::pick_gated`).
+    async fn ready_gated(&self, exclude: &HashSet<i64>) -> Result<Vec<Row>> {
+        let picked = {
+            let mut c = self.hub.db.acquire().await?;
+            crate::limits::landing::pick_gated(&mut c, self.project, &self.branch, exclude, MAX_BATCH).await?
+        };
+        picked
+            .rows
+            .into_iter()
+            .map(|r| {
+                Ok(Row {
+                    seq: r.seq,
+                    ticket: r.ticket,
+                    person: Person { id: r.person_id, name: r.person_name, device_key: r.device_key, agent: None },
+                    stack: super::decode_stack(&r.stack)?,
+                    lineage: r.lineage,
+                    epochs: (r.person_epoch, r.project_epoch),
+                    merges: r.merges.max(0) as u32,
+                    agent_session: r.agent_session,
+                    gate_tip: r.gate_tip,
                 })
             })
             .collect()

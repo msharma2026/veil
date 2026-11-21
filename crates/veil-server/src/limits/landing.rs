@@ -366,6 +366,9 @@ pub struct Ready {
     /// One of the server's own reverts (S20, `priority > 0`).
     pub revert: bool,
     pub created_at: i64,
+    /// agent-ci fork: the tip a verifier approved this row on (gated
+    /// branches only, `pick_gated`).
+    pub gate_tip: Option<String>,
 }
 
 impl QueuedEntry for Ready {
@@ -439,12 +442,57 @@ fn ready_rows(rows: Vec<ReadyRow>) -> Vec<Ready> {
                     agent_session,
                     revert: priority > 0,
                     created_at,
+                    gate_tip: None,
                 },
             )
         })
         .collect();
     rows.sort_by_key(|(priority, r)| (std::cmp::Reverse(*priority), r.created_at, r.seq));
     rows.into_iter().map(|(_, r)| r).collect()
+}
+
+/// agent-ci fork: the rows of gated branch `branch` a verifier approved,
+/// in the verifier's order (`gate_order`), at most `limit`, leaving out the
+/// rows `exclude`. No fair share: the verifier chose the order.
+pub async fn pick_gated(c: &mut PgConnection, project: i64, branch: &str, exclude: &HashSet<i64>, limit: usize) -> Result<Picked> {
+    type GatedRow = (i64, String, i64, String, String, String, String, i64, i64, i64, i64, Option<String>, i32, i64, Option<String>);
+    let exclude: Vec<i64> = exclude.iter().copied().collect();
+    let rows: Vec<GatedRow> = sqlx::query_as(
+        "SELECT seq, ticket, person_id, person_name, device_key, session, stack, lineage, person_epoch, project_epoch, merges, \
+         agent_session, priority, created_at, gate_tip FROM landing_queue \
+         WHERE project_id = $1 AND branch = $2 AND state = 'queued' AND gate_ok AND seq <> ALL($3) \
+         ORDER BY gate_order, seq LIMIT $4",
+    )
+    .bind(project)
+    .bind(branch)
+    .bind(&exclude)
+    .bind(limit as i64)
+    .fetch_all(&mut *c)
+    .await?;
+    let read = rows.len();
+    let rows = rows
+        .into_iter()
+        .map(
+            |(seq, ticket, person_id, person_name, device_key, session, stack, lineage, person_epoch, project_epoch, merges, agent_session, priority, created_at, gate_tip)| Ready {
+                seq,
+                ticket,
+                person_id,
+                person_name,
+                device_key,
+                session,
+                stack,
+                lineage,
+                person_epoch,
+                project_epoch,
+                merges,
+                agent_session,
+                revert: priority > 0,
+                created_at,
+                gate_tip,
+            },
+        )
+        .collect();
+    Ok(Picked { rows, statements: 1, read })
 }
 
 /// The next batch of `branch`'s queue, at most `limit` rows, leaving out

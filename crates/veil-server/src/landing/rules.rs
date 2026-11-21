@@ -25,6 +25,10 @@ pub const RULES_FILE: &str = ".veilrules";
 pub struct Rules {
     /// The protected branches.
     pub protected: BTreeSet<String>,
+    /// agent-ci fork: gated branches (`gated = true`, which implies
+    /// `protected`): their landing service lands only what a verifier
+    /// approved (`landing::gate`).
+    pub gated: BTreeSet<String>,
     /// Protected branches where automatic revert is disabled (`auto_revert = false`).
     pub no_auto_revert: BTreeSet<String>,
     /// Whether `[branches] delete_merged = false` disables automatic deletion of
@@ -45,7 +49,8 @@ impl Rules {
     /// True when `branch` is protected and `auto_revert` is not set to `false`
     /// (product decision 11).
     pub fn allows_auto_revert(&self, branch: &str) -> bool {
-        self.protected.contains(branch) && !self.no_auto_revert.contains(branch)
+        // agent-ci fork: a gated branch is reverted by its verifier only.
+        self.protected.contains(branch) && !self.no_auto_revert.contains(branch) && !self.gated.contains(branch)
     }
 
     /// Should landing a PR delete its merged source branch (`[branches] delete_merged`, default `true`)?
@@ -78,6 +83,14 @@ impl Rules {
                             }
                             Some(false) => {}
                             None => return Err(format!("{RULES_FILE}: `branches.{name}.protected` is true or false")),
+                        },
+                        "gated" => match value.as_bool() {
+                            Some(true) => {
+                                out.gated.insert(name.to_string());
+                                out.protected.insert(name.to_string());
+                            }
+                            Some(false) => {}
+                            None => return Err(format!("{RULES_FILE}: `branches.{name}.gated` is true or false")),
                         },
                         "auto_revert" | "revert" => match value.as_bool() {
                             Some(true) => {
@@ -112,7 +125,7 @@ impl Rules {
                                 out.required_checks.insert(name.to_string(), names);
                             }
                         }
-                        _ => return Err(format!("{RULES_FILE}: unknown rule `branches.{name}.{key}` (known: protected, required_checks, auto_revert)")),
+                        _ => return Err(format!("{RULES_FILE}: unknown rule `branches.{name}.{key}` (known: protected, gated, required_checks, auto_revert)")),
                     }
                 }
             }
@@ -158,6 +171,14 @@ impl Rules {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gated_implies_protected() {
+        let r = Rules::parse("[branches.main]\ngated = true\n").unwrap();
+        assert!(r.gated.contains("main"));
+        assert!(r.protected.contains("main"));
+        assert!(Rules::parse("[branches.main]\ngated = 1\n").is_err());
+    }
 
     #[test]
     fn protected_branches_and_refusals() {

@@ -20,6 +20,7 @@
 //! a push to one lands its new changes instead.
 
 pub mod edits;
+pub mod gate;
 pub mod lease_lock;
 pub mod merge;
 pub mod rules;
